@@ -204,43 +204,49 @@ func main() {
 	log.Printf("Running...")
 	go theEnv.run(nil)
 
+	printMenu := func(w http.ResponseWriter) {
+		io.WriteString(w, header+`
+<h1><a href="/on">on</a></h1>
+<h1><a href="/off">off</a></h1>
+<h1><a href="/toggle">toggle</a></h1>
+<h1><a href="/ireland">ireland</a></h1>
+<h1><a href="/candycane">candycane</a></h1>
+</body>
+`)
+	}
+
 	http.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
-		io.WriteString(w, header+`
-<h1><a href="/on">on</a></h1>
-<h1><a href="/off">off</a></h1>
-<h1><a href="/toggle">toggle</a></h1>
-</body>
-`)
+		printMenu(w)
 	}))
-	http.Handle("/off", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		theEnv.mu.Lock()
-		defer theEnv.mu.Unlock()
-		log.Printf("switched off")
-		theEnv.Anim = off{}
-		io.WriteString(w, header+`<h1>lights OFF</h1>`)
-	}))
-	http.Handle("/on", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		theEnv.mu.Lock()
-		defer theEnv.mu.Unlock()
-		theEnv.Anim = pride{}
-		io.WriteString(w, header+`<h1>lights ON</h1>`)
-	}))
+
+	add := func(path string, a Animation) {
+		http.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			theEnv.mu.Lock()
+			defer theEnv.mu.Unlock()
+			theEnv.Anim = a
+			printMenu(w)
+		})
+	}
+
+	add("/ireland", ireland{})
+	add("/candycane", &candyCane{})
+	add("/off", off{})
+	add("/on", pride{})
+
 	http.Handle("/toggle", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		theEnv.mu.Lock()
 		defer theEnv.mu.Unlock()
 		if _, isOff := theEnv.Anim.(off); isOff {
 			theEnv.Anim = pride{}
 			log.Printf("switched on")
-			io.WriteString(w, "<html><body><h1>lights ON</h1>")
 		} else {
 			theEnv.Anim = off{}
-			log.Printf("switched off")
-			io.WriteString(w, "<html><body><h1>lights OFF</h1>")
 		}
+		printMenu(w)
 	}))
 
 	if *listen != "" {
