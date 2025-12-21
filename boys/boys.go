@@ -227,6 +227,7 @@ func main() {
 		http.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			theEnv.mu.Lock()
 			defer theEnv.mu.Unlock()
+			theEnv.Cycle = 0
 			theEnv.Anim = a
 			printMenu(w)
 		})
@@ -242,6 +243,7 @@ func main() {
 		defer theEnv.mu.Unlock()
 		if _, isOff := theEnv.Anim.(off); isOff {
 			theEnv.Anim = pride{}
+			theEnv.Cycle = 0
 			log.Printf("switched on")
 		} else {
 			theEnv.Anim = off{}
