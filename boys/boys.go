@@ -234,7 +234,7 @@ func main() {
 	}
 
 	add("/ireland", ireland{})
-	add("/candycane", &candyCane{})
+	add("/candycane", candyCane{})
 	add("/off", off{})
 	add("/on", pride{})
 
@@ -513,47 +513,29 @@ func (kippes) Paint(e *PaintEnv) {
 	})
 }
 
-// candyCane is dark red with oscillating bright white segments around
-// each bar on the roof.
-type candyCane struct {
-	rad   []float64
-	amp   []float64
-	speed []float64
-}
+type candyCane struct{}
 
-func (a *candyCane) Paint(e *PaintEnv) {
-	segs := []Line{All}
-	if e.Cycle == 0 {
-		a.rad = make([]float64, len(segs))
-		a.amp = make([]float64, len(segs))
-		a.speed = make([]float64, len(segs))
-		for i := range segs {
-			a.rad[i] = rand.Float64() * (math.Pi / 0.5)
-			a.amp[i] = float64(10 + rand.Intn(5))
-			a.speed[i] = 0.1 + (rand.Float64() / 3)
-		}
-	}
+func (candyCane) Paint(e *PaintEnv) {
 	All.Foreach(e, func(p Pixel) {
-		p.set(90, 0, 0, maxBright/7)
+		pos := (p.N - e.Cycle) / 16
+		if pos < 0 {
+			pos = -pos
+		}
+		orig := pos
+		pos %= 2
+
+		var r, g, b uint8
+		switch pos {
+		case 0:
+			r = 0x70
+		case 1:
+			r, g, b = 0xff, 0xff, 0xff
+		default:
+			panic("not 0, 1: " + fmt.Sprintf("%d %% 2 = %d", orig, pos))
+		}
+		p.set(r, g, b, maxBright)
 	})
-	for i, seg := range segs {
-		a.rad[i] += a.speed[i]
-		cos := math.Cos(a.rad[i]) * a.amp[i]
-		from := seg.Low
-		to := seg.Low + int(cos)
-		if to < from {
-			to, from = from, to
-		}
-		if from < 0 {
-			from = 0
-		}
-		if to >= *numLights {
-			to = *numLights
-		}
-		for n := from; n <= to; n++ {
-			e.setLight(n, 255, 255, 255, maxBright)
-		}
-	}
+	time.Sleep(32 * time.Millisecond)
 }
 
 type particle struct {
@@ -670,7 +652,6 @@ func (pride) Paint(e *PaintEnv) {
 type ireland struct{}
 
 func (ireland) Paint(e *PaintEnv) {
-	log.Printf("paint cycle = %d\n", e.Cycle)
 	All.Foreach(e, func(p Pixel) {
 		pos := (p.N - e.Cycle) / 16
 		if pos < 0 {
@@ -694,7 +675,7 @@ func (ireland) Paint(e *PaintEnv) {
 		}
 		p.set(r, g, b, maxBright)
 	})
-	time.Sleep(16 * time.Millisecond)
+	time.Sleep(32 * time.Millisecond)
 }
 
 // party random!
