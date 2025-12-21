@@ -5,10 +5,10 @@
 //
 // Raspberry Pi pins:
 //
-//    red: 5V, pin2
-//    black: ground, pin6 etc
-//    green: SPIO_MOSI, pin19
-//    yellow: SPIO_SLCK, pin23
+//	red: 5V, pin2
+//	black: ground, pin6 etc
+//	green: SPIO_MOSI, pin19
+//	yellow: SPIO_SLCK, pin23
 package main
 
 import (
@@ -31,54 +31,14 @@ import (
 	"periph.io/x/periph/host/rpi"
 )
 
-// NumLight is the number of lights in the strip.
-// Fewer means better refresh rate.
-const NumLight = 450
-
-// CardDir is a cardinal direction.
-// It is aspirational only for an unwritten simulator.
-type CardDir byte
-
-const (
-	_ CardDir = iota
-	North
-	South
-	East
-	West
-)
-
 var theEnv *PaintEnv
 
-// Line is a subset of the lights on Brad's house.
+// Line is a subset of the lights
 type Line struct {
 	Low, High int
-	Dir       CardDir
 }
 
-var (
-	Short = Line{0, 50, North}
-	All   = Line{0, NumLight - 1, North}
-
-	Wall  = Line{22, 81, East}    // back wall on deck
-	G1    = Line{82, 126, South}  // east glass panel #1
-	G2    = Line{127, 167, South} // ...
-	G3    = Line{168, 212, South}
-	G4    = Line{213, 255, South}
-	G6    = Line{256, 299, South}
-	G7    = Line{300, 341, South}
-	G8    = Line{342, 385, South}
-	G9    = Line{386, 429, South} //east glass panel #9
-	G19   = Line{82, 429, South}  // all east glass panels, 1-9
-	F5    = Line{430, 462, West}  // rightmost glass panel when facing house (left side is high num)
-	F4    = Line{463, 501, West}  // ...
-	F3    = Line{502, 538, West}
-	F2    = Line{539, 575, West}
-	F1    = Line{576, 612, West}  // leftmost glass panel when facing house (left side is high num)
-	Front = Line{430, 612, West}  // all front glass panels
-	GW    = Line{613, 654, North} // glass part facing west by door
-	FW    = Line{655, 705, West}  // front wood (over door)
-	WoodW = Line{706, 748, North} // west wall
-)
+var All Line
 
 func (ln *Line) Foreach(e *PaintEnv, fn func(p Pixel)) {
 	for i := ln.Low; i <= ln.High; i++ {
@@ -88,13 +48,17 @@ func (ln *Line) Foreach(e *PaintEnv, fn func(p Pixel)) {
 
 const (
 	startBytes = 4
-	stopBytes  = ((NumLight / 2) / 8) + 1
+	stopBytes  = 4 * 4 // good enough
 )
 
 // Mem is the memory we send to the SPI device.
 // It includes the 4 zero bytes and the variable number of
 // 0xff stop bytes.
-type Mem [4 + NumLight*4 + stopBytes]byte
+type Mem []byte
+
+func NewMem(numLights int) Mem {
+	return make(Mem, startBytes+numLights*4+stopBytes)
+}
 
 // maxBright is the maximum brightness level (31).
 // Each pixel can have brightness in range [0,31].
@@ -102,26 +66,26 @@ const maxBright = 0xff - 0xe0
 
 // init populates the stop bytes with 0xff and sets
 // everything else to black.
-func (m *Mem) init() {
-	s := m[4+NumLight*4:]
+func (m Mem) init() {
+	s := m[startBytes+*numLights*4:]
 	for i := range s {
 		s[i] = 0xff
 	}
 	m.zero()
 }
 
-func (m *Mem) maybeSetLight(n int, r, g, b, a uint8) {
-	if n < 0 || n >= NumLight {
+func (m Mem) maybeSetLight(n int, r, g, b, a uint8) {
+	if n < 0 || n >= *numLights {
 		return
 	}
 	m.setLight(n, r, g, b, a)
 }
 
-func (m *Mem) setLight(n int, r, g, b, a uint8) {
+func (m Mem) setLight(n int, r, g, b, a uint8) {
 	if a > maxBright {
 		panic("a too high; max is 31")
 	}
-	if n >= NumLight {
+	if n >= *numLights {
 		panic("n too big")
 	}
 	if n < 0 {
@@ -134,13 +98,13 @@ func (m *Mem) setLight(n int, r, g, b, a uint8) {
 	s[3] = r
 }
 
-func (m *Mem) zero() {
-	for i := 0; i < NumLight; i++ {
+func (m Mem) zero() {
+	for i := 0; i < *numLights; i++ {
 		m.setLight(i, 0, 0, 0, 0)
 	}
 }
 
-func (m *Mem) send(c spi.Conn) error {
+func (m Mem) send(c spi.Conn) error {
 	err := c.Tx(m[:], nil)
 	return err
 }
@@ -148,13 +112,14 @@ func (m *Mem) send(c spi.Conn) error {
 // dieWhenBinaryChanges exits the program when it detects the program
 // changed. The Raspberry Pi is running:
 //
-//   $ while true; do ./xmas ; done
+//	$ while true; do ./xmas ; done
 //
 // ... in a screen session. And my Makefile on my Mac has:
 //
 // .PHONY:
 //
 // xmas: .PHONY
+//
 //	GOARM=6 GOOS=linux GOARCH=arm go install .
 //	scp -C /Users/bradfitz/bin/linux_arm/xmas pi@10.0.0.30:xmas.tmp
 //	ssh pi@10.0.0.30 'install xmas.tmp xmas'
@@ -175,10 +140,21 @@ func dieWhenBinaryChanges() {
 	}
 }
 
-var listen = flag.String("listen", ":8080", "listen address for HTTP server, empty to not run one")
+var (
+	numLights = flag.Int("n", 450, "number of lights in the strip")
+	listen    = flag.String("listen", ":8080", "listen address for HTTP server, empty to not run one")
+)
+
+const header = `<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lights</title>
+</head><body>
+`
 
 func main() {
 	flag.Parse()
+	All = Line{Low: 0, High: *numLights - 1}
 	if !rpi.Present() {
 		log.Fatalf("expected to be running on a Raspberry Pi.")
 	}
@@ -210,7 +186,7 @@ func main() {
 	if flag.NArg() == 1 {
 		log.Printf("Debugging light %q", flag.Arg(0))
 		targ, _ := strconv.Atoi(flag.Arg(0))
-		var m Mem
+		m := NewMem(*numLights)
 		m.init()
 		m.setLight(targ, 255, 255, 255, maxBright)
 		if err := m.send(spic); err != nil {
@@ -222,6 +198,7 @@ func main() {
 	theEnv = &PaintEnv{
 		dev:  spic,
 		Anim: pride{},
+		Mem:  NewMem(*numLights),
 	}
 
 	log.Printf("Running...")
@@ -232,8 +209,7 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		io.WriteString(w, `<html>
-<body>
+		io.WriteString(w, header+`
 <h1><a href="/on">on</a></h1>
 <h1><a href="/off">off</a></h1>
 <h1><a href="/toggle">toggle</a></h1>
@@ -245,13 +221,13 @@ func main() {
 		defer theEnv.mu.Unlock()
 		log.Printf("switched off")
 		theEnv.Anim = off{}
-		io.WriteString(w, "<html><body><h1>lights OFF</h1>")
+		io.WriteString(w, header+`<h1>lights OFF</h1>`)
 	}))
 	http.Handle("/on", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		theEnv.mu.Lock()
 		defer theEnv.mu.Unlock()
 		theEnv.Anim = pride{}
-		io.WriteString(w, "<html><body><h1>lights ON</h1>")
+		io.WriteString(w, header+`<h1>lights ON</h1>`)
 	}))
 	http.Handle("/toggle", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		theEnv.mu.Lock()
@@ -369,15 +345,15 @@ func (randomWhite) Paint(e *PaintEnv) {
 		})
 	}
 	for i := 0; i < 10; i++ {
-		n := rand.Intn(NumLight)
+		n := rand.Intn(*numLights)
 		e.setLight(n, 254, 254, 254, maxBright/2)
 	}
 	for i := 0; i < 20; i++ {
-		n := rand.Intn(NumLight)
+		n := rand.Intn(*numLights)
 		e.setLight(n, 254, 254, 254, maxBright)
 	}
 	for i := 0; i < 10; i++ {
-		n := rand.Intn(NumLight)
+		n := rand.Intn(*numLights)
 		e.setLight(n, 0, 0, 128, maxBright)
 	}
 }
@@ -448,46 +424,12 @@ func (traditional) Paint(e *PaintEnv) {
 	})
 }
 
-var segs = [...]Line{
-	G1, G2, G3, G4, G4, G6, G7, G8, G9,
-	F5, F4, F3, F2, F1,
-	GW, FW, WoodW,
-}
-
-// randomSegs makes each glass segment on the roof alternate between
-// red and green at random times.
-type randomSegs struct {
-	state []bool
-	count []int
-}
-
-func (a *randomSegs) Paint(e *PaintEnv) {
-	if e.Cycle == 0 {
-		a.state = make([]bool, len(segs))
-		a.count = make([]int, len(segs))
-	}
-	for i, seg := range segs {
-		on := a.state[i]
-		if a.count[i] == 0 {
-			a.state[i] = !on
-			a.count[i] = rand.Intn(20)
-		} else {
-			a.count[i]--
-		}
-		seg.Foreach(e, func(p Pixel) {
-			if on {
-				p.set(255, 0, 0, 30)
-			} else {
-				p.set(0, 128, 0, 20)
-			}
-		})
-	}
-}
-
 // HSLToRGB convert a Hue-Saturation-Lightness (HSL) color to sRGB.
-//    0 <= H < 360,
-//    0 <= S <= 1,
-//    0 <= L <= 1.
+//
+//	0 <= H < 360,
+//	0 <= S <= 1,
+//	0 <= L <= 1.
+//
 // The output sRGB values are scaled between 0 and 1.
 //
 // This is a copy of https://code.google.com/p/chroma/source/browse/f64/colorspace/hsl.go#53
@@ -572,6 +514,7 @@ type candyCane struct {
 }
 
 func (a *candyCane) Paint(e *PaintEnv) {
+	segs := []Line{All}
 	if e.Cycle == 0 {
 		a.rad = make([]float64, len(segs))
 		a.amp = make([]float64, len(segs))
@@ -596,8 +539,8 @@ func (a *candyCane) Paint(e *PaintEnv) {
 		if from < 0 {
 			from = 0
 		}
-		if to >= NumLight {
-			to = NumLight
+		if to >= *numLights {
+			to = *numLights
 		}
 		for n := from; n <= to; n++ {
 			e.setLight(n, 255, 255, 255, maxBright)
@@ -628,7 +571,7 @@ func (a *fireworks) Paint(e *PaintEnv) {
 	const lnInc = 0.3
 
 	if a.lnx < 1 || a.lnx > maxLn {
-		a.origin = Front.Low + rand.Intn(Front.High-Front.Low)
+		a.origin = All.Low + rand.Intn(All.High-All.Low)
 		a.hue = rand.Intn(360)
 		a.lnx = 1.0
 		a.particles = a.particles[:0]
@@ -651,14 +594,14 @@ func (a *fireworks) Paint(e *PaintEnv) {
 	}
 
 	a.light = a.light[:0]
-	for i := 0; i < NumLight; i++ {
+	for i := 0; i < *numLights; i++ {
 		a.light = append(a.light, 0.0)
 	}
 
 	for _, p := range a.particles {
 		x := float64(a.origin) + math.Log(a.lnx)*p.amp*p.speedBump
 		xi := int(x)
-		if xi < 0 || xi >= NumLight {
+		if xi < 0 || xi >= *numLights {
 			continue
 		}
 		a.light[xi] += a.lightInc
@@ -682,7 +625,7 @@ func (seahawks) Paint(e *PaintEnv) {
 	const r1, g1, b1 = 0, 0, 30  // blue
 	const r2, g2, b2 = 0, 167, 1 // green
 
-	for i, seg := range segs {
+	for i, seg := range []Line{All} {
 		which := i % 2
 		var r, g, b, a uint8
 		switch which {
@@ -702,6 +645,7 @@ type pride struct{}
 
 func (pride) Paint(e *PaintEnv) {
 	const speed = 1 // lower = slower
+	var last Pixel
 	All.Foreach(e, func(p Pixel) {
 		h := float64((p.N + (e.Cycle * speed)) % 360)
 		s := 1.0
@@ -709,8 +653,10 @@ func (pride) Paint(e *PaintEnv) {
 		rf, gf, bf := HSLToRGB(h, s, l)
 		r, g, b := byte(rf*255), byte(gf*255), byte(bf*255)
 		p.set(r, g, b, byte(l*30))
+		last = p
 	})
-	time.Sleep(30 * time.Millisecond)
+	last.set(255, 255, 255, maxBright)
+	time.Sleep(16 * time.Millisecond)
 }
 
 type ireland struct{}
@@ -764,7 +710,7 @@ func (random) Paint(e *PaintEnv) {
 			a = maxBright
 		}
 		i++
-		e.setLight((p.N+e.Cycle*3)%NumLight, r, g, b, a)
+		e.setLight((p.N+e.Cycle*3)%*numLights, r, g, b, a)
 	})
 	e.Sleep(300 * time.Millisecond)
 }
@@ -800,7 +746,7 @@ func (a *colorPlosion) Paint(e *PaintEnv) {
 	}
 	if len(a.m) < maxGrowers {
 		gr := &grower{
-			Origin: rand.Intn(NumLight),
+			Origin: rand.Intn(*numLights),
 			Hue:    rand.Float64() * 360,
 		}
 		a.m[gr] = true
