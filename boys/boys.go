@@ -12,6 +12,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unsafe"
 
 	"periph.io/x/periph/conn/physic"
 	"periph.io/x/periph/conn/spi"
@@ -201,6 +203,8 @@ func main() {
 		Mem:  NewMem(*numLights),
 	}
 
+	go theEnv.readMouseLoop()
+
 	log.Printf("Running...")
 	go theEnv.run(nil)
 
@@ -239,15 +243,7 @@ func main() {
 	add("/on", pride{})
 
 	http.Handle("/toggle", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		theEnv.mu.Lock()
-		defer theEnv.mu.Unlock()
-		if _, isOff := theEnv.Anim.(off); isOff {
-			theEnv.Anim = pride{}
-			theEnv.Cycle = 0
-			log.Printf("switched on")
-		} else {
-			theEnv.Anim = off{}
-		}
+		theEnv.toggleOnOff()
 		printMenu(w)
 	}))
 
@@ -269,10 +265,14 @@ func (e *PaintEnv) run(cancel <-chan struct{}) {
 		default:
 			e.mu.Lock()
 			e.nextSleep = 0
-			e.Anim.Paint(e)
-			if e.Anim != lastAnim {
-				lastAnim = e.Anim
-				log.Printf("paintEnv running %T", e.Anim)
+			anim := e.Anim
+			if e.Off {
+				anim = off{}
+			}
+			anim.Paint(e)
+			if anim != lastAnim {
+				lastAnim = anim
+				log.Printf("paintEnv running %T", anim)
 			}
 			e.Cycle++
 			d := e.nextSleep
@@ -301,6 +301,8 @@ type PaintEnv struct {
 
 	mu sync.Mutex // guards rest
 	Mem
+	Off       bool
+	AnimIdx   int
 	Cycle     int
 	Anim      Animation
 	nextSleep time.Duration
@@ -768,4 +770,77 @@ func (a *colorPlosion) Paint(e *PaintEnv) {
 
 type fader struct {
 	final Mem
+}
+
+func (e *PaintEnv) readMouseLoop() {
+	for {
+		f, err := os.Open("/dev/input/event0")
+		if err != nil {
+			log.Printf("open mouse: %v", err)
+		} else {
+			err = e.processMouseEvents(f)
+			log.Printf("processMouseEvents done: %v", err)
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func (e *PaintEnv) toggleOnOff() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.Off = !e.Off
+}
+
+func (e *PaintEnv) nextAnim() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.AnimIdx++
+	animations := []Animation{
+		pride{},
+		ireland{},
+		candyCane{},
+	}
+	e.Anim = animations[e.AnimIdx%len(animations)]
+	e.Cycle = 0
+}
+
+func (e *PaintEnv) processMouseEvents(f *os.File) error {
+	defer f.Close()
+	for {
+		ev, err := readInputEvent(f)
+		if err != nil {
+			return fmt.Errorf("read input event: %v", err)
+		}
+		if ev.Type == 1 { // EV_KEY button
+			if ev.Code == 272 && ev.Value == 1 { // left button press
+				e.nextAnim()
+			}
+			if ev.Code == 274 && ev.Value == 1 { // right button press
+				e.toggleOnOff()
+			}
+		}
+	}
+}
+
+func readInputEvent(r io.Reader) (inputEvent, error) {
+	var e inputEvent
+	if unsafe.Sizeof(int(0)) == 4 {
+		return inputEvent{}, fmt.Errorf("32-bit architectures not tested/supported")
+	}
+	if err := binary.Read(r, binary.NativeEndian, &e); err != nil {
+		return inputEvent{}, err
+	}
+	return e, nil
+}
+
+type inputEvent struct {
+	Sec   int64  // timeval.tv_sec
+	Usec  int64  // timeval.tv_usec
+	Type  uint16 // ev.type
+	Code  uint16 // ev.code
+	Value int32  // ev.value
+}
+
+func (e inputEvent) Timestamp() time.Time {
+	return time.Unix(e.Sec, e.Usec*1_000)
 }
