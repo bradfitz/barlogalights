@@ -815,7 +815,7 @@ func (e *PaintEnv) processMouseEvents(f *os.File) error {
 			if ev.Code == 272 && ev.Value == 1 { // left button press
 				e.nextAnim()
 			}
-			if ev.Code == 274 && ev.Value == 1 { // right button press
+			if ev.Code == 274 && ev.Value == 1 { // middle button press
 				e.toggleOnOff()
 			}
 		}
