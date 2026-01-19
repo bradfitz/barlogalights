@@ -198,12 +198,15 @@ func main() {
 	}
 
 	theEnv = &PaintEnv{
-		dev:  spic,
-		Anim: pride{},
-		Mem:  NewMem(*numLights),
+		dev:   spic,
+		Anim:  pride{},
+		Mem:   NewMem(*numLights),
+		speed: 1,
 	}
 
-	go theEnv.readMouseLoop()
+	for dev := range 5 {
+		go theEnv.readInputDeviceLoop(dev)
+	}
 
 	log.Printf("Running...")
 	go theEnv.run(nil)
@@ -274,7 +277,7 @@ func (e *PaintEnv) run(cancel <-chan struct{}) {
 				lastAnim = anim
 				log.Printf("paintEnv running %T", anim)
 			}
-			e.Cycle++
+			e.Cycle += e.speed
 			d := e.nextSleep
 			if err := e.send(e.dev); err != nil {
 				log.Fatalf("send: %v", err)
@@ -304,10 +307,9 @@ type PaintEnv struct {
 	Off       bool
 	AnimIdx   int
 	Cycle     int
+	speed     int // cycle increment per loop
 	Anim      Animation
 	nextSleep time.Duration
-
-	Percent float64 // [0,1]
 }
 
 type unit struct{}
@@ -519,7 +521,7 @@ type candyCane struct{}
 
 func (candyCane) Paint(e *PaintEnv) {
 	All.Foreach(e, func(p Pixel) {
-		pos := (p.N - e.Cycle) / 16
+		pos := (p.N - (e.Cycle / 4)) / 16
 		if pos < 0 {
 			pos = -pos
 		}
@@ -536,6 +538,17 @@ func (candyCane) Paint(e *PaintEnv) {
 			panic("not 0, 1: " + fmt.Sprintf("%d %% 2 = %d", orig, pos))
 		}
 		p.set(r, g, b, maxBright)
+	})
+	time.Sleep(16 * time.Millisecond)
+}
+
+type white struct{}
+
+func (white) Paint(e *PaintEnv) {
+	All.Foreach(e, func(p Pixel) {
+		ratio := (float64(e.speed) + 10) / 20.0
+		amt := max(min(byte(31*ratio), 31), 0)
+		p.set(0xff, 0xff, 0xff, amt)
 	})
 	time.Sleep(32 * time.Millisecond)
 }
@@ -772,14 +785,18 @@ type fader struct {
 	final Mem
 }
 
-func (e *PaintEnv) readMouseLoop() {
+func (e *PaintEnv) readInputDeviceLoop(n int) {
 	for {
-		f, err := os.Open("/dev/input/event0")
+		f, err := os.Open("/dev/input/event" + fmt.Sprintf("%d", n))
 		if err != nil {
-			log.Printf("open mouse: %v", err)
+			if os.IsNotExist(err) {
+				// be quiet
+			} else {
+				log.Printf("open mouse: %v", err)
+			}
 		} else {
-			err = e.processMouseEvents(f)
-			log.Printf("processMouseEvents done: %v", err)
+			err = e.processInputEvents(f)
+			log.Printf("processInputEvents done: %v", err)
 		}
 		time.Sleep(5 * time.Second)
 	}
@@ -791,32 +808,81 @@ func (e *PaintEnv) toggleOnOff() {
 	e.Off = !e.Off
 }
 
+var animations = []Animation{
+	pride{},
+	ireland{},
+	candyCane{},
+	white{},
+}
+
 func (e *PaintEnv) nextAnim() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.AnimIdx++
-	animations := []Animation{
-		pride{},
-		ireland{},
-		candyCane{},
-	}
 	e.Anim = animations[e.AnimIdx%len(animations)]
 	e.Cycle = 0
 }
 
-func (e *PaintEnv) processMouseEvents(f *os.File) error {
+func (e *PaintEnv) setAnimNumber(n int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.AnimIdx = n
+	e.Anim = animations[e.AnimIdx%len(animations)]
+	e.Cycle = 0
+}
+
+func (e *PaintEnv) wheel(dir int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if dir > 0 {
+		e.speed++
+	} else if dir < 0 {
+		e.speed--
+	}
+	if e.speed < -10 {
+		e.speed = -10
+	} else if e.speed > 10 {
+		e.speed = 10
+	}
+	log.Printf("speed now %d", e.speed)
+}
+
+func (e *PaintEnv) processInputEvents(f *os.File) error {
 	defer f.Close()
 	for {
 		ev, err := readInputEvent(f)
 		if err != nil {
 			return fmt.Errorf("read input event: %v", err)
 		}
-		if ev.Type == 1 { // EV_KEY button
-			if ev.Code == 272 && ev.Value == 1 { // left button press
-				e.nextAnim()
+		switch ev.Type {
+		case 1: // EV_KEY
+			if ev.Value == 1 {
+				switch ev.Code {
+				case 272: // left button press
+					e.toggleOnOff()
+				case 30: // 'a' key
+					e.setAnimNumber(0)
+				case 48: // 'b' key
+					e.setAnimNumber(1)
+				case 46: // 'c' key
+					e.setAnimNumber(2)
+				case 32: // 'd' key
+					e.setAnimNumber(3)
+				case 18: // 'e' key
+					e.setAnimNumber(4)
+				case 33: // 'f' key
+					e.setAnimNumber(5)
+				default:
+					log.Printf("EV_KEY Value=1, Code=%v not handled", ev.Code)
+				}
 			}
-			if ev.Code == 274 && ev.Value == 1 { // middle button press
-				e.toggleOnOff()
+		case 2: // EV_REL
+			if ev.Code == 8 { // REL_WHEEL
+				if ev.Value < 0 {
+					e.wheel(1)
+				} else if ev.Value > 0 {
+					e.wheel(-1)
+				}
 			}
 		}
 	}
