@@ -5,19 +5,20 @@
 // code that I wrote to run the LED strips on my roof at one point.
 //
 // Buy a Raspberry Pi and 1-5 of these:
-//     "Addressable LED Strip APA102-C"
-//     (5 meters, 30 LEDs/meter, White PCB, silicone sleeve)
-//     http://www.amazon.com/gp/product/B00YVYSOC2
+//
+//	"Addressable LED Strip APA102-C"
+//	(5 meters, 30 LEDs/meter, White PCB, silicone sleeve)
+//	http://www.amazon.com/gp/product/B00YVYSOC2
 //
 // If SPI is disabled on the Raspberry Pi,
 // Add dtparam=spi=on to /boot/config.txt and reboot.
 //
 // Raspberry Pi B+ pins:
 //
-//    red: 5V, pin2
-//    black: ground, pin6 etc
-//    yellow: SPIO_MOSI, pin19
-//    green: SPIO_SLCK, pin23
+//	red: 5V, pin2
+//	black: ground, pin6 etc
+//	yellow: SPIO_MOSI, pin19
+//	green: SPIO_SLCK, pin23
 package main
 
 import (
@@ -32,6 +33,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	_ "time/tzdata" // gokrazy has no /usr/share/zoneinfo
 
 	"periph.io/x/periph/conn/physic"
 	"periph.io/x/periph/conn/spi"
@@ -157,13 +159,14 @@ func (m *Mem) send(c spi.Conn) error {
 // dieWhenBinaryChanges exits the program when it detects the program
 // changed. The Raspberry Pi is running:
 //
-//   $ while true; do ./xmas ; done
+//	$ while true; do ./xmas ; done
 //
 // ... in a screen session. And my Makefile on my Mac has:
 //
 // .PHONY:
 //
 // xmas: .PHONY
+//
 //	GOARM=6 GOOS=linux GOARCH=arm go install .
 //	scp -C /Users/bradfitz/bin/linux_arm/xmas pi@10.0.0.30:xmas.tmp
 //	ssh pi@10.0.0.30 'install xmas.tmp xmas'
@@ -235,6 +238,7 @@ func main() {
 
 	log.Printf("Running...")
 	go theEnv.run(nil)
+	go nightScheduler()
 
 	http.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -246,8 +250,16 @@ func main() {
 <h1><a href="/on">on</a></h1>
 <h1><a href="/off">off</a></h1>
 <h1><a href="/toggle">toggle</a></h1>
+<h1><a href="/night">night</a></h1>
 </body>
 `)
+	}))
+	http.Handle("/night", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		theEnv.mu.Lock()
+		defer theEnv.mu.Unlock()
+		log.Printf("switched to night")
+		theEnv.Anim = night{}
+		io.WriteString(w, "<html><body><h1>lights NIGHT</h1>")
 	}))
 	http.Handle("/off", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		theEnv.mu.Lock()
@@ -494,9 +506,11 @@ func (a *randomSegs) Paint(e *PaintEnv) {
 }
 
 // HSLToRGB convert a Hue-Saturation-Lightness (HSL) color to sRGB.
-//    0 <= H < 360,
-//    0 <= S <= 1,
-//    0 <= L <= 1.
+//
+//	0 <= H < 360,
+//	0 <= S <= 1,
+//	0 <= L <= 1.
+//
 // The output sRGB values are scaled between 0 and 1.
 //
 // This is a copy of https://code.google.com/p/chroma/source/browse/f64/colorspace/hsl.go#53
@@ -785,6 +799,72 @@ func (off) Paint(e *PaintEnv) {
 		e.setLight(p.N, 0, 0, 0, 0)
 	})
 	e.Sleep(200 * time.Millisecond)
+}
+
+// night is a static, dim pattern of alternating dark red and dark
+// purple for late hours.
+type night struct{}
+
+func (night) Paint(e *PaintEnv) {
+	All.Foreach(e, func(p Pixel) {
+		if (p.N/4)%2 == 0 {
+			p.set(80, 0, 0, 2) // dark red
+		} else {
+			p.set(48, 0, 80, 2) // dark purple
+		}
+	})
+	e.Sleep(time.Second)
+}
+
+// Night mode runs from nightStartHour until nightEndHour, local time.
+const (
+	nightStartHour = 21
+	nightEndHour   = 7
+)
+
+var nightLoc = mustLoadLocation("America/Los_Angeles")
+
+func mustLoadLocation(name string) *time.Location {
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		panic(err)
+	}
+	return loc
+}
+
+func isNightTime(t time.Time) bool {
+	h := t.In(nightLoc).Hour()
+	return h >= nightStartHour || h < nightEndHour
+}
+
+// nightScheduler switches to night mode at nightStartHour and back to
+// the default animation at nightEndHour. It polls rather than sleeping
+// until a computed time, because the clock jumps from 1970 to the real
+// time once NTP syncs after boot. On the first valid time it also
+// applies the current period, so a reboot at night comes up in night
+// mode. Manual changes via HTTP stick until the next transition.
+func nightScheduler() {
+	var wasNight, known bool
+	for ; ; time.Sleep(30 * time.Second) {
+		now := time.Now()
+		if now.Year() < 2020 {
+			continue // clock not set yet
+		}
+		isNight := isNightTime(now)
+		if known && isNight == wasNight {
+			continue
+		}
+		theEnv.mu.Lock()
+		if isNight {
+			log.Printf("scheduler: switching to night")
+			theEnv.Anim = night{}
+		} else if _, ok := theEnv.Anim.(night); ok {
+			log.Printf("scheduler: switching night off")
+			theEnv.Anim = pride{}
+		}
+		theEnv.mu.Unlock()
+		wasNight, known = isNight, true
+	}
 }
 
 type grower struct {
